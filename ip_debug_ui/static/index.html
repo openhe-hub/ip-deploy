@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>IP debug UI</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="topbar">
+  <span id="status" class="ok">connecting…</span>
+  <input id="prompt-input" type="text" value="cube ." placeholder="GD prompt">
+  <label class="topbar-label">thresh
+    <input id="gd-thresh" type="number" step="0.05" min="0.05" max="0.95" value="0.40">
+  </label>
+  <button id="btn-reset">reset episode</button>
+  <input id="demo-name" type="text" placeholder="demo name (optional)">
+  <button id="btn-record">● record</button>
+  <button id="btn-ip-run">▶ run IP</button>
+  <span id="prompt-spacer"></span>
+  <button id="btn-straighten">straighten (T)</button>
+  <button id="btn-home">home (R)</button>
+  <button id="btn-grip-open">open (Space)</button>
+  <button id="btn-grip-close">close (Shift+Space)</button>
+</div>
+
+<div id="grid">
+  <div class="panel" id="panel-rgb">
+    <div class="panel-title">RGB + bbox</div>
+    <canvas id="cv-rgb" width="640" height="480"></canvas>
+  </div>
+  <div class="panel" id="panel-mask">
+    <div class="panel-title">RGB + mask</div>
+    <canvas id="cv-mask" width="640" height="480"></canvas>
+  </div>
+  <div class="panel" id="panel-pcd">
+    <div class="panel-title">pcd_w (top-down, base frame)</div>
+    <canvas id="cv-pcd" width="480" height="480"></canvas>
+  </div>
+  <div class="panel" id="right-col">
+    <div class="panel-title">state</div>
+    <pre id="state-readout"></pre>
+
+    <div class="panel-title">keyboard</div>
+    <div id="keyboard">
+      <div class="kb-section-label">translate (base frame, ±2cm)</div>
+      <div class="kb-row">
+        <div class="kb-key" data-k="q" data-help="z +2cm">Q</div>
+        <div class="kb-key" data-k="w" data-help="x +2cm">W</div>
+        <div class="kb-key" data-k="e" data-help="z −2cm">E</div>
+      </div>
+      <div class="kb-row">
+        <div class="kb-key" data-k="a" data-help="y −2cm">A</div>
+        <div class="kb-key" data-k="s" data-help="x −2cm">S</div>
+        <div class="kb-key" data-k="d" data-help="y +2cm">D</div>
+      </div>
+
+      <div class="kb-section-label">rotate (EE frame, ±10°)</div>
+      <div class="kb-row">
+        <div class="kb-key" data-k="ArrowUp" data-help="pitch +10°">↑</div>
+      </div>
+      <div class="kb-row">
+        <div class="kb-key" data-k="ArrowLeft" data-help="roll +10°">←</div>
+        <div class="kb-key" data-k="ArrowDown" data-help="pitch −10°">↓</div>
+        <div class="kb-key" data-k="ArrowRight" data-help="roll −10°">→</div>
+        <div class="kb-key kb-spacer"></div>
+        <div class="kb-key" data-k="j" data-help="yaw +10°">J</div>
+        <div class="kb-key" data-k="l" data-help="yaw −10°">L</div>
+      </div>
+
+      <div class="kb-section-label">modifiers / actions</div>
+      <div class="kb-row">
+        <div class="kb-key kb-mod" data-k="Shift" data-help="× 3 step">Shift</div>
+        <div class="kb-key kb-mod" data-k="Control" data-help="× 0.2 step">Ctrl</div>
+        <div class="kb-key kb-wide" data-k=" " data-help="open / Shift+Space close">Space</div>
+        <div class="kb-key" data-k="r" data-help="home">R</div>
+        <div class="kb-key" data-k="t" data-help="straighten quat (down)">T</div>
+      </div>
+    </div>
+
+    <div class="panel-title">event log</div>
+    <div id="log"></div>
+  </div>
+</div>
+
+<script src="/static/main.js"></script>
+</body>
+</html>

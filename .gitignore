@@ -1,0 +1,76 @@
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+develop-eggs/
+sdist/
+wheels/
+pip-wheel-metadata/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+.cache
+
+# ---------- Virtualenv ----------
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# ---------- Editors / IDE ----------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ---------- OS ----------
+.DS_Store
+Thumbs.db
+
+# ---------- Env / secrets ----------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ---------- Logs / temp ----------
+*.log
+logs/
+tmp/
+*.tmp
+
+# ---------- Data / models / media (demos & captures) ----------
+ip_runner/demos/*
+!ip_runner/demos/.gitkeep
+*.npz
+*.npy
+*.pkl
+*.pickle
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.bag
+*.mp4
+*.avi
+*.mov
+
+# ---------- Calibration outputs ----------
+*.T_base_camera.npy
+T_base_camera*.npy
+
+# ---------- Claude local ----------
+.claude/settings.local.json
