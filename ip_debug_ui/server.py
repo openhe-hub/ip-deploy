@@ -453,7 +453,8 @@ async def _apply_ip_act(state: "State", args, act_msg: dict) -> None:
                     if d == 1:
                         g.goto(0.08, 0.1, 30.0)
                     else:
-                        g.grasp(0.1, 30.0, 0.0)
+                        # See _apply_gripper for why goto, not grasp.
+                        g.goto(0.0, 0.1, 30.0)
                 except Exception as e:
                     print(f"[ui] gripper cmd err: {e!r}", flush=True)
             loop = asyncio.get_event_loop()
@@ -538,12 +539,17 @@ async def _apply_gripper(state: State, msg: dict):
 
     # Fire-and-forget so we don't block the WS recv coroutine; also keep the
     # IP loop's edge-trigger in sync so it doesn't immediately undo this.
+    # NOTE: close uses goto(0.0, ...), not grasp(). Franka grasp() aborts when
+    # it doesn't detect an object inside the epsilon window, which made
+    # "close" fail silently when the gripper had nothing to grab. goto(0.0)
+    # unconditionally drives the fingers closed; objects in the way physically
+    # stop the motion (width settles at the object thickness).
     def _do(g, a):
         try:
             if a == "open":
                 g.goto(0.08, 0.1, 30.0)
             elif a == "close":
-                g.grasp(0.1, 30.0, 0.0)
+                g.goto(0.0, 0.1, 30.0)
         except Exception as e:
             print(f"[ui] gripper {a!r} err: {e!r}", flush=True)
     loop = asyncio.get_event_loop()

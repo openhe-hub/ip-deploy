@@ -27,6 +27,10 @@ let lastRGBFrontB64 = "", lastRGBWristB64 = "";
 // The IP data path is unaffected.
 let rawSource = "wrist";
 
+// Latest known gripper open/close state. Drives the Space-as-toggle keybind.
+// Synced from frame.gripper_width each tick (open above 4cm).
+let currentGripState = "open";
+
 const COLORS = ["#fa6", "#6f8", "#6cf", "#fc6", "#f88", "#8c8", "#88f", "#cfc"];
 
 function colorForLabel(label, idx) {
@@ -165,6 +169,9 @@ function updateState(msg) {
   const ee = msg.ee_pos || [0,0,0];
   const q  = msg.ee_quat || [0,0,0,1];
   const gw = msg.gripper_width;
+  if (typeof gw === "number") {
+    currentGripState = (gw > 0.04) ? "open" : "close";
+  }
   const segAge = msg.seg_age_ms;
   const recLine = msg.recording
     ? `RECORDING   ${(msg.recording_dur_s ?? 0).toFixed(1)} s, ${msg.recording_n} frames`
@@ -377,9 +384,13 @@ document.addEventListener("keydown", (ev) => {
 
   if (k === " ") {
     ev.preventDefault();
-    const action = ev.shiftKey ? "close" : "open";
+    // Toggle based on the latest known width (synced in updateState below).
+    // Shift+Space-as-close was unreliable on macOS browsers (OS-level
+    // intercept for page-up scroll fires before our preventDefault).
+    const action = (currentGripState === "open") ? "close" : "open";
+    currentGripState = action;  // optimistic; frame loop will reconcile
     send({type: "gripper", action});
-    logLine(`gripper ${action}`, "grip");
+    logLine(`gripper ${action} (toggle)`, "grip");
     return;
   }
   // R (home) and T (straighten) are temporarily disabled — they have triggered
@@ -461,10 +472,12 @@ $("btn-reset").onclick = () => {
 };
 $("btn-grip-open").onclick = () => {
   send({type: "gripper", action: "open"});
+  currentGripState = "open";
   logLine("gripper open (button)", "grip");
 };
 $("btn-grip-close").onclick = () => {
   send({type: "gripper", action: "close"});
+  currentGripState = "close";
   logLine("gripper close (button)", "grip");
 };
 
