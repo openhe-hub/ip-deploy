@@ -73,4 +73,7 @@ ip_runner/demos/*
 T_base_camera*.npy
 
 # ---------- Claude local ----------
-.claude/settings.local.json
+.claude/
+
+# ---------- Vendor docs (large binary manuals) ----------
+docs/*.pdf
