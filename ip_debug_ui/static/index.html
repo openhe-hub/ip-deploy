@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>IP debug UI</title>
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v=20260510b">
 </head>
 <body>
 <div id="topbar">
@@ -16,6 +16,12 @@
   <input id="demo-name" type="text" placeholder="demo name (optional)">
   <button id="btn-record">● record</button>
   <button id="btn-ip-run">▶ run IP</button>
+  <label class="topbar-label">camera
+    <select id="camera-source">
+      <option value="front">Front</option>
+      <option value="wrist">Wrist</option>
+    </select>
+  </label>
   <span id="prompt-spacer"></span>
   <button id="btn-straighten">straighten (T)</button>
   <button id="btn-home">home (R)</button>
@@ -25,12 +31,22 @@
 
 <div id="grid">
   <div class="panel" id="panel-rgb">
-    <div class="panel-title">RGB + bbox</div>
+    <div class="panel-title">RGB + bbox <span id="cam-label" class="cam-label"></span></div>
     <canvas id="cv-rgb" width="640" height="480"></canvas>
   </div>
   <div class="panel" id="panel-mask">
-    <div class="panel-title">RGB + mask</div>
+    <div class="panel-title">RGB + mask <span id="cam-label-mask" class="cam-label"></span></div>
     <canvas id="cv-mask" width="640" height="480"></canvas>
+  </div>
+  <div class="panel" id="panel-rgb-alt">
+    <div class="panel-title">RGB raw
+      <select id="raw-source">
+        <option value="front">Front</option>
+        <option value="wrist">Wrist</option>
+      </select>
+      <span id="cam-wrist-label" class="cam-label"></span>
+    </div>
+    <canvas id="cv-rgb-alt" width="640" height="480"></canvas>
   </div>
   <div class="panel" id="panel-pcd">
     <div class="panel-title">pcd_w (top-down, base frame)</div>
@@ -82,6 +98,6 @@
   </div>
 </div>
 
-<script src="/static/main.js"></script>
+<script src="/static/main.js?v=20260510b"></script>
 </body>
 </html>

@@ -183,7 +183,7 @@ steady-state per step:
 |---|---|---|
 | `RESET` | NUC → 127 | `episode_id`, `prompt`, `gd_box_threshold`, `gd_text_threshold` |
 | `ACK`   | 127 → NUC | `ok`, `boxes`(GD 检出 box,首帧返回) |
-| `OBS`   | NUC → 127 | `color_bgr_jpeg`, `depth_uint16_png`, `K`, `T_w_e (4,4)`, `grip ∈ {0,1}`, `step`, *(可选)* `skip_ip: bool`, *(可选)* `include_seg: bool` |
+| `OBS`   | NUC → 127 | `color_bgr_jpeg`, `depth_uint16_png`, `K`, `T_w_e (4,4)`, `grip ∈ {0,1}`, `step`, *(可选)* `skip_ip: bool`, *(可选)* `include_seg: bool`。`K` 与 `T_w_e` 始终对应**当前 IP 源 cam**(由 UI 的 `--ip-camera-source` 决定;wrist 模式下 server 端 `T_base_camera = T_w_e @ T_ee_camera`) |
 | `ACT`   | 127 → NUC | `target_pos (3,)`, `target_quat_xyzw (4,)`, `grip_cmd ∈ {-1,0,+1}`, `regrasp_required`, `info`;若 OBS 带 `include_seg=True` 还附带 `mask_png`, `boxes_xyxy`, `box_labels`, `box_scores`, `pcd_w` |
 | `SEG`   | 127 → NUC | OBS 带 `skip_ip=True` 时返回:`mask_png`, `boxes_xyxy`, `box_labels`, `box_scores`, `pcd_w`(无 IP forward,`type="seg"`) |
 | `ERR`   | 127 → NUC | `msg`, `trace` — 任意服务端失败兜底 |
@@ -229,17 +229,35 @@ steady-state per step:
 > 详情见 `~/.claude/projects/.../memory/franka_nuc_ssh_routes.md`。
 
 **nyu-127 启 server(两条路径共用):**
+
+二选一传相机标定。`--T-base-camera` 是 front-cam 静态外参(老路径);
+`--T-ee-camera` 是 wrist-cam 手眼标定,server 每帧用 `T_w_e @ T_ee_camera`
+重算 T_base_camera。两者互斥,必须传恰好一个。
+
 ```bash
 ssh nyu-127
 source ~/miniconda3/etc/profile.d/conda.sh && conda activate ip_deploy
 cd ~/zhewen/robo/ip-deploy
+
+# Variant 1 — front cam (静态外参,老路径)
 python -m ip_runner.server \
   --bind tcp://*:5556 \
   --demo ip_runner/demos/demo_12-12-47.pkl \
   --checkpoint ./instant_policy/checkpoints/model.pt \
   --instant-policy-dir ./instant_policy \
   --T-base-camera ip_runner/calib/T_base_camera_3.3cm.npy
+
+# Variant 2 — wrist cam (动态外参,2026-05-10 新路径)
+python -m ip_runner.server \
+  --bind tcp://*:5556 \
+  --demo ip_runner/demos/demo_12-12-47.pkl \
+  --checkpoint ./instant_policy/checkpoints/model.pt \
+  --instant-policy-dir ./instant_policy \
+  --T-ee-camera /home/nyuair/zhewen/calibration/T_ee_camera.npy
 ```
+
+`T_ee_camera.npy` 需 rsync 到 nyu-127(源:Mac `calibration/wrist-camera/T_ee_camera.npy`)。
+
 
 ### 6a. Variant A — CLI executor
 
@@ -264,7 +282,7 @@ python -m ip_executor.run \
 
 ### 6b. Variant B — Web UI
 
-**NUC 启 UI:**
+**NUC 启 UI(front cam 默认):**
 ```bash
 ssh franka-backup
 source /home/franka/conda/etc/profile.d/conda.sh && conda activate polymetis-local
@@ -272,6 +290,16 @@ cd /home/franka/ICRT
 PYTHONPATH=/home/franka/ICRT python -m ip_debug_ui.server \
   --ip-server tcp://10.224.36.127:5556 \
   --prompt "red cube . green cube . blue cube . yellow cube ."
+```
+
+**NUC 启 UI(wrist cam 作 IP 源):** server 端要用 Variant 2 启动。
+启动后可在 UI topbar `camera` 下拉框运行时切换 front ↔ wrist。
+```bash
+PYTHONPATH=/home/franka/ICRT python -m ip_debug_ui.server \
+  --ip-server tcp://10.224.36.127:5556 \
+  --camera wrist \
+  --alt-width 640 --alt-height 480 --alt-fps 30 \
+  --prompt "red cube ."
 ```
 
 **本地 Mac 端口转发 + 开浏览器:**

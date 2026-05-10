@@ -5,6 +5,7 @@ const $ = id => document.getElementById(id);
 const cvRGB = $("cv-rgb"), ctxRGB = cvRGB.getContext("2d");
 const cvMask = $("cv-mask"), ctxMask = cvMask.getContext("2d");
 const cvPCD = $("cv-pcd"), ctxPCD = cvPCD.getContext("2d");
+const cvRGBAlt = $("cv-rgb-alt"), ctxRGBAlt = cvRGBAlt.getContext("2d");
 const stateReadout = $("state-readout");
 const status = $("status");
 const logEl = $("log");
@@ -13,6 +14,18 @@ const wsUrl = (location.protocol === "https:" ? "wss:" : "ws:")
   + "//" + location.host + "/ws";
 let ws = null;
 let lastFrameTs = 0, frameCount = 0, fps = 0;
+
+// Camera source state. `cameraSource` is the OBS data source server-side
+// (which RGB+depth+K actually feed GroundingDINO+SAM2 and reach ip_runner).
+// The UI selector flips it at runtime via a `set_camera` WS message.
+let cameraSource = "front";
+let serialFront = "", serialWrist = "";
+let lastRGBFrontB64 = "", lastRGBWristB64 = "";
+
+// `rawSource` is independent of `cameraSource`: it controls only which RGB
+// stream the third pane (cv-rgb-alt, "RGB raw") shows, with no GD/SAM2 overlay.
+// The IP data path is unaffected.
+let rawSource = "wrist";
 
 const COLORS = ["#fa6", "#6f8", "#6cf", "#fc6", "#f88", "#8c8", "#88f", "#cfc"];
 
@@ -52,6 +65,15 @@ function drawRGB(rgbDataURL, boxes, labels, scores) {
     }
   };
   img.src = rgbDataURL;
+}
+
+function drawRGBAlt(b64) {
+  if (!b64) return;
+  const img = new Image();
+  img.onload = () => {
+    ctxRGBAlt.drawImage(img, 0, 0, cvRGBAlt.width, cvRGBAlt.height);
+  };
+  img.src = "data:image/jpeg;base64," + b64;
 }
 
 function drawMask(rgbDataURL, maskB64) {
@@ -191,6 +213,14 @@ function highlightKey(key, on) {
   }
 }
 
+function updateCamLabels() {
+  const serial = (cameraSource === "wrist") ? serialWrist : serialFront;
+  const cl = $("cam-label");
+  if (cl) cl.textContent = `${cameraSource} · ${serial || "?"}`;
+  const cm = $("cam-label-mask");
+  if (cm) cm.textContent = `${cameraSource} · ${serial || "?"}`;
+}
+
 // ---------- websocket ----------
 function connect() {
   ws = new WebSocket(wsUrl);
@@ -211,13 +241,33 @@ function connect() {
       const inp = $("prompt-input");
       if (inp && msg.prompt) inp.value = msg.prompt;
       logLine(`prompt default: "${msg.prompt}"`, "");
+      serialFront = msg.camera_serial_front || "";
+      serialWrist = msg.camera_serial_wrist || "";
+      cameraSource = msg.camera_source || "front";
+      const sel = $("camera-source");
+      if (sel) sel.value = cameraSource;
+      const cw = $("cam-wrist-label");
+      if (cw) cw.textContent = serialWrist || "(disabled)";
+      logLine(`camera: ${cameraSource}`
+              + `  front=${serialFront || "?"}`
+              + `  wrist=${serialWrist || "(disabled)"}`, "");
+      updateCamLabels();
       return;
     }
     if (msg.type === "frame") {
-      const dataURL = "data:image/jpeg;base64," + msg.rgb_jpeg_b64;
-      drawRGB(dataURL, msg.boxes, msg.box_labels, msg.box_scores);
-      drawMask(dataURL, msg.mask_png_b64);
+      lastRGBFrontB64 = msg.rgb_front_jpeg_b64 || "";
+      lastRGBWristB64 = msg.rgb_wrist_jpeg_b64 || "";
+      const b64 = (cameraSource === "wrist")
+        ? lastRGBWristB64 : lastRGBFrontB64;
+      if (b64) {
+        const dataURL = "data:image/jpeg;base64," + b64;
+        drawRGB(dataURL, msg.boxes, msg.box_labels, msg.box_scores);
+        drawMask(dataURL, msg.mask_png_b64);
+      }
       drawPCD(msg.pcd_w, msg.ee_pos);
+      // RGB raw pane shows whichever feed the per-pane selector picks,
+      // independent of the global `cameraSource` (which drives IP data flow).
+      drawRGBAlt((rawSource === "front") ? lastRGBFrontB64 : lastRGBWristB64);
       updateState(msg);
       const now = performance.now();
       frameCount++;
@@ -255,6 +305,20 @@ function connect() {
     }
     if (msg.type === "ip_run_stopped") {
       logLine("IP closed-loop STOP — keyboard teleop re-enabled", "rec");
+      return;
+    }
+    if (msg.type === "set_camera_ack") {
+      const sel = $("camera-source");
+      if (msg.ok) {
+        cameraSource = msg.value;
+        if (sel) sel.value = cameraSource;
+        updateCamLabels();
+        logLine(`camera -> ${cameraSource}`, "");
+      } else {
+        // Revert the dropdown to the still-current source.
+        if (sel) sel.value = cameraSource;
+        logLine(`camera switch FAILED: ${msg.msg}`, "warn");
+      }
       return;
     }
   };
@@ -318,16 +382,17 @@ document.addEventListener("keydown", (ev) => {
     logLine(`gripper ${action}`, "grip");
     return;
   }
+  // R (home) and T (straighten) are temporarily disabled — they have triggered
+  // joint 6 velocity safety limits multiple times (2026-05-09 / 2026-05-10),
+  // killing the polymetis controller mid-session. Use slow ↑/↓/←/→/J/L
+  // rotations instead.
   if (k === "r" || k === "R") {
-    if (confirm("home the robot?")) {
-      send({type: "home"});
-      logLine("home (joint move)", "home");
-    }
+    logLine("R (home) disabled — use slow rotation keys", "warn");
+    ev.preventDefault();
     return;
   }
   if (k === "t" || k === "T") {
-    send({type: "straighten"});
-    logLine("straighten quat (gripper down)", "rot");
+    logLine("T (straighten) disabled — use slow rotation keys", "warn");
     ev.preventDefault();
     return;
   }
@@ -381,12 +446,10 @@ kbKeys.forEach(el => {
 });
 
 $("btn-home").onclick = () => {
-  send({type: "home"});
-  logLine("home (joint move)", "home");
+  logLine("home button disabled — see disable note above straighten/home key handlers", "warn");
 };
 $("btn-straighten").onclick = () => {
-  send({type: "straighten"});
-  logLine("straighten quat (button)", "rot");
+  logLine("straighten button disabled — see disable note above straighten/home key handlers", "warn");
 };
 $("btn-reset").onclick = () => {
   const promptText = $("prompt-input").value.trim() || "cube .";
@@ -432,3 +495,27 @@ updateState = (msg) => {
   lastRunningIP = !!msg.running_ip;
   _origUpdateState(msg);
 };
+
+const cameraSel = $("camera-source");
+let pendingCamera = null;  // value being requested; reverted on NACK
+if (cameraSel) {
+  cameraSel.addEventListener("change", () => {
+    pendingCamera = cameraSel.value;
+    send({type: "set_camera", value: pendingCamera});
+    logLine(`requesting camera -> ${pendingCamera}`, "");
+  });
+}
+
+// Per-pane "RGB raw" source selector. Purely client-side: just picks which of
+// the two cached RGB streams to render in cv-rgb-alt. No WS message needed.
+const rawSel = $("raw-source");
+if (rawSel) {
+  rawSel.value = rawSource;
+  rawSel.addEventListener("change", () => {
+    rawSource = rawSel.value;
+    // Repaint immediately from cache so the user sees the switch before the
+    // next frame tick.
+    drawRGBAlt(rawSource === "front" ? lastRGBFrontB64 : lastRGBWristB64);
+    logLine(`raw -> ${rawSource}`, "");
+  });
+}

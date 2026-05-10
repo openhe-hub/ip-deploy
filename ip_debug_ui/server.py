@@ -111,8 +111,11 @@ class State:
     def __init__(self, args):
         self.args = args
         self.cam: Optional[RealSenseCamera] = None
+        self.cam_alt: Optional[RealSenseCamera] = None
         self.K: tuple = (0.0, 0.0, 0.0, 0.0)
+        self.K_alt: tuple = (0.0, 0.0, 0.0, 0.0)
         self.depth_scale: float = 0.001
+        self.depth_scale_alt: float = 0.001
         self.robot = None
         self.gripper = None
         self.zmq_ctx = zmq.Context.instance()
@@ -140,6 +143,14 @@ class State:
         # Latest observations (kept fresh by the camera loop)
         self.color_bgr: Optional[np.ndarray] = None
         self.depth_mm: Optional[np.ndarray] = None
+        self.color_bgr_alt: Optional[np.ndarray] = None
+        self.depth_mm_alt: Optional[np.ndarray] = None
+
+        # Runtime-mutable camera source for the OBS data sent to ip_runner.
+        # "front" -> state.cam (primary RealSense); "wrist" -> state.cam_alt.
+        # Defaults to args.camera; can be flipped via WS "set_camera" messages
+        # from the UI selector.
+        self.camera_source: str = args.camera
         self.ee_pos: np.ndarray = np.zeros(3)
         self.ee_quat: np.ndarray = np.array([0, 0, 0, 1.0])
         self.gripper_width: float = 0.0
@@ -170,6 +181,34 @@ class State:
         self.K = (float(intr["fx"]), float(intr["fy"]),
                   float(intr["cx"]), float(intr["cy"]))
         self.depth_scale = float(self.cam.depth_scale)
+        # Optional second camera. Display-only by default; can be promoted
+        # to the IP source via --ip-camera-source alt.
+        alt_serial = (getattr(a, "camera_serial_alt", "") or "").strip()
+        if alt_serial and alt_serial != a.camera_serial:
+            try:
+                self.cam_alt = RealSenseCamera(
+                    serial=alt_serial, name=alt_serial,
+                    width=a.alt_width, height=a.alt_height, fps=a.alt_fps)
+                intr_alt = self.cam_alt.intrinsics_dict()
+                self.K_alt = (float(intr_alt["fx"]), float(intr_alt["fy"]),
+                              float(intr_alt["cx"]), float(intr_alt["cy"]))
+                self.depth_scale_alt = float(self.cam_alt.depth_scale)
+                print(f"[ui] alt camera {alt_serial} opened "
+                      f"({a.alt_width}x{a.alt_height}@{a.alt_fps}) "
+                      f"K_alt={self.K_alt}", flush=True)
+            except Exception as e:
+                print(f"[ui] alt camera {alt_serial} unavailable: {e!r}",
+                      flush=True)
+                self.cam_alt = None
+        if a.camera == "wrist":
+            if self.cam_alt is None:
+                sys.exit(f"[ui] --camera=wrist but wrist camera "
+                         f"{alt_serial!r} is unavailable")
+            if (a.alt_width, a.alt_height) != (640, 480):
+                print(f"[ui] WARNING: --camera=wrist with "
+                      f"--alt-width/height={a.alt_width}x{a.alt_height} "
+                      f"!= 640x480; calibration was done at 640x480",
+                      flush=True)
         self.robot = RobotInterface(ip_address=a.robot_host, port=a.robot_port)
         try:
             self.gripper = GripperInterface(
@@ -212,14 +251,23 @@ def _build_app(state: State, args) -> FastAPI:
 
     @app.get("/")
     def index():
-        return FileResponse(str(here / "static" / "index.html"))
+        # Send no-cache so the ?v=... cache-busting suffixes inside index.html
+        # actually get picked up after a code redeploy.
+        return FileResponse(str(here / "static" / "index.html"),
+                            headers={"Cache-Control": "no-store"})
 
     @app.get("/api/init")
     def init_info():
         return {
-            "K": list(state.K),
+            "K_front": list(state.K),
+            "K_wrist": list(state.K_alt),
             "width": args.width, "height": args.height,
             "prompt": args.prompt,
+            "camera_serial_front": args.camera_serial,
+            "camera_serial_wrist": (
+                args.camera_serial_alt if state.cam_alt is not None else ""),
+            "alt_width": args.alt_width, "alt_height": args.alt_height,
+            "camera_source": state.camera_source,
         }
 
     @app.websocket("/ws")
@@ -229,12 +277,18 @@ def _build_app(state: State, args) -> FastAPI:
         # Send initial config
         await ws.send_json({
             "type": "config",
-            "K": list(state.K),
+            "K_front": list(state.K),
+            "K_wrist": list(state.K_alt),
             "width": args.width, "height": args.height,
             "prompt": args.prompt,
             "boxes": state.boxes_cached,
             "box_labels": state.box_labels,
             "box_scores": state.box_scores,
+            "camera_serial_front": args.camera_serial,
+            "camera_serial_wrist": (
+                args.camera_serial_alt if state.cam_alt is not None else ""),
+            "alt_width": args.alt_width, "alt_height": args.alt_height,
+            "camera_source": state.camera_source,
         })
 
         async def push_loop():
@@ -245,11 +299,18 @@ def _build_app(state: State, args) -> FastAPI:
                         [int(cv2.IMWRITE_JPEG_QUALITY), 70])[1]
                     payload = {
                         "type": "frame",
-                        "rgb_jpeg_b64": base64.b64encode(bytes(jpeg)).decode(),
+                        "rgb_front_jpeg_b64": base64.b64encode(
+                            bytes(jpeg)).decode(),
                         "ee_pos": state.ee_pos.tolist(),
                         "ee_quat": state.ee_quat.tolist(),
                         "gripper_width": float(state.gripper_width),
                     }
+                    if state.color_bgr_alt is not None:
+                        jpeg_alt = cv2.imencode(
+                            ".jpg", state.color_bgr_alt,
+                            [int(cv2.IMWRITE_JPEG_QUALITY), 65])[1]
+                        payload["rgb_wrist_jpeg_b64"] = base64.b64encode(
+                            bytes(jpeg_alt)).decode()
                     if state.last_seg is not None:
                         payload["mask_png_b64"] = state.last_seg["mask_png_b64"]
                         payload["boxes"] = state.last_seg["boxes"]
@@ -331,6 +392,28 @@ def _build_app(state: State, args) -> FastAPI:
                     state.running_ip = False
                     print("[ui] IP closed-loop STOP", flush=True)
                     await ws.send_json({"type": "ip_run_stopped"})
+                elif t == "set_camera":
+                    new_src = msg.get("value")
+                    if new_src not in ("front", "wrist"):
+                        await ws.send_json({"type": "set_camera_ack",
+                                            "ok": False,
+                                            "msg": f"unknown camera "
+                                                   f"{new_src!r}"})
+                    elif new_src == "wrist" and state.cam_alt is None:
+                        await ws.send_json({"type": "set_camera_ack",
+                                            "ok": False,
+                                            "msg": "wrist camera unavailable"})
+                    else:
+                        state.camera_source = new_src
+                        # Drop stale seg viz so the UI doesn't render the old
+                        # camera's mask/boxes over the new feed for one tick.
+                        state.last_seg = None
+                        state.boxes_cached = []
+                        state.box_labels = []
+                        state.box_scores = []
+                        print(f"[ui] camera source -> {new_src}", flush=True)
+                        await ws.send_json({"type": "set_camera_ack",
+                                            "ok": True, "value": new_src})
                 else:
                     pass
 
@@ -518,6 +601,17 @@ async def camera_loop(state: State):
                     ).astype(np.uint16)
         state.color_bgr = color
         state.depth_mm = depth_mm
+        if state.cam_alt is not None:
+            try:
+                ca, da = state.cam_alt.poll()
+                if ca is not None:
+                    state.color_bgr_alt = ca
+                if da is not None:
+                    state.depth_mm_alt = (
+                        da.astype(np.float32) * state.depth_scale_alt
+                        * 1000.0).astype(np.uint16)
+            except Exception:
+                pass
         if state.robot is not None:
             try:
                 pos, quat = state.robot.get_ee_pose()
@@ -534,11 +628,28 @@ async def camera_loop(state: State):
         await asyncio.sleep(0)
 
 
+def _ip_obs(state: "State"):
+    """Pick (color, depth, K) for the OBS sent to ip_runner.
+
+    Reads state.camera_source live so the UI selector can flip the source at
+    runtime. In wrist mode we strictly return the wrist cam's data; if it
+    isn't ready yet we return Nones so seg_loop sleeps. Falling back to
+    front would send a front-cam K with a wrist-cam T_base_camera assumed by
+    the server, which is a silent geometric corruption — better to wait.
+    """
+    if state.camera_source == "wrist":
+        if state.color_bgr_alt is None or state.depth_mm_alt is None:
+            return None, None, None
+        return state.color_bgr_alt, state.depth_mm_alt, state.K_alt
+    return state.color_bgr, state.depth_mm, state.K
+
+
 async def seg_loop(state: State, args):
     """Periodically POST the current obs to nyu-127 in skip_ip mode."""
     step_i = 0
     while True:
-        if state.color_bgr is None or state.depth_mm is None:
+        color_bgr, depth_mm, K = _ip_obs(state)
+        if color_bgr is None or depth_mm is None:
             await asyncio.sleep(0.1)
             continue
         if not state.episode_id:
@@ -555,8 +666,8 @@ async def seg_loop(state: State, args):
         step_i += 1
         # Build OBS
         ok1, jpeg = cv2.imencode(
-            ".jpg", state.color_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-        ok2, png = cv2.imencode(".png", state.depth_mm)
+            ".jpg", color_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        ok2, png = cv2.imencode(".png", depth_mm)
         if not (ok1 and ok2):
             await asyncio.sleep(0.1)
             continue
@@ -571,7 +682,7 @@ async def seg_loop(state: State, args):
             "type": "obs", "episode_id": state.episode_id,
             "step": state.ip_step_i if ip_mode else step_i,
             "color_bgr_jpeg": bytes(jpeg), "depth_uint16_png": bytes(png),
-            "K": state.K, "T_w_e": T_w_e, "grip": grip_in,
+            "K": K, "T_w_e": T_w_e, "grip": grip_in,
             "skip_ip": (not ip_mode),
             "include_seg": ip_mode,  # in IP mode, ask server to bundle viz back
         }
@@ -639,6 +750,17 @@ def main():
     ap.add_argument("--width", type=int, default=640)
     ap.add_argument("--height", type=int, default=480)
     ap.add_argument("--fps", type=int, default=6)
+    ap.add_argument("--camera-serial-alt", default="153122074137",
+                    help="optional second camera, display only. "
+                         "empty string disables.")
+    ap.add_argument("--alt-width", type=int, default=424)
+    ap.add_argument("--alt-height", type=int, default=240)
+    ap.add_argument("--alt-fps", type=int, default=6)
+    ap.add_argument("--camera", choices=["front", "wrist"], default="front",
+                    help="Initial camera source for OBS sent to ip_runner. "
+                         "Runtime-switchable via the UI topbar selector. "
+                         "Pair with --T-ee-camera on ip_runner when wrist; "
+                         "bump --alt-* to 640x480@30 when wrist.")
     ap.add_argument("--robot-host", default="localhost")
     ap.add_argument("--robot-port", type=int, default=50051)
     ap.add_argument("--gripper-host", default="localhost")
@@ -663,6 +785,8 @@ def main():
 
     state = State(args)
     state.init_hardware()
+    print(f"[ui] camera={state.camera_source} "
+          f"K_front={state.K} K_wrist={state.K_alt}", flush=True)
     app = _build_app(state, args)
 
     @app.on_event("startup")

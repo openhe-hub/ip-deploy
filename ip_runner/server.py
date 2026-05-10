@@ -85,12 +85,28 @@ class Server:
         print(f"[server] demo loaded: {num_traj_wp} waypoints,"
               f" first pcd N={demo['pcds'][0].shape[0]}", flush=True)
 
-        # Calibration
-        self.T_base_camera = np.load(str(args.T_base_camera)).astype(np.float64)
-        assert self.T_base_camera.shape == (4, 4), \
-            f"T_base_camera must be 4x4, got {self.T_base_camera.shape}"
-        print(f"[server] T_base_camera loaded:\n{self.T_base_camera}",
-              flush=True)
+        # Calibration. Two modes:
+        #   static: load fixed T_base_camera (front-facing external cam)
+        #   wrist:  load T_ee_camera, compute T_base_camera = T_w_e @ T_ee_camera
+        #           per OBS (wrist-mounted cam, follows EE)
+        if args.T_base_camera is not None:
+            self.camera_mode = "static"
+            self.T_base_camera_static = np.load(
+                str(args.T_base_camera)).astype(np.float64)
+            assert self.T_base_camera_static.shape == (4, 4), \
+                f"T_base_camera must be 4x4, got {self.T_base_camera_static.shape}"
+            self.T_ee_camera = None
+            print(f"[server] camera_mode=static\n"
+                  f"T_base_camera=\n{self.T_base_camera_static}", flush=True)
+        else:
+            self.camera_mode = "wrist"
+            self.T_base_camera_static = None
+            self.T_ee_camera = np.load(
+                str(args.T_ee_camera)).astype(np.float64)
+            assert self.T_ee_camera.shape == (4, 4), \
+                f"T_ee_camera must be 4x4, got {self.T_ee_camera.shape}"
+            print(f"[server] camera_mode=wrist\n"
+                  f"T_ee_camera=\n{self.T_ee_camera}", flush=True)
 
         # GD + SAM2 — load once, reuse across episodes
         print("[server] loading GroundingDINO ...", flush=True)
@@ -121,7 +137,12 @@ class Server:
                 T_w_es=demo_T_w_es, grips=demo_grips,
                 # pad-stack into a single array indexed by waypoint
                 **{f"pcd_{i:02d}": p for i, p in enumerate(demo_pcds)})
-            np.save(self.debug_dir / "T_base_camera.npy", self.T_base_camera)
+            (self.debug_dir / "camera_mode.txt").write_text(self.camera_mode)
+            if self.camera_mode == "static":
+                np.save(self.debug_dir / "T_base_camera.npy",
+                        self.T_base_camera_static)
+            else:
+                np.save(self.debug_dir / "T_ee_camera.npy", self.T_ee_camera)
             print(f"[server] debug dump dir: {self.debug_dir}", flush=True)
 
         # Episode state
@@ -208,9 +229,14 @@ class Server:
         masks = self.sam2.step(rgb, ep.boxes_xyxy)
         info["t_sam2_ms"] = (time.time() - t0) * 1e3
 
-        # Lift + base-frame point cloud
+        # Lift + base-frame point cloud. In wrist mode T_base_camera is
+        # recomputed each OBS from the live EE pose.
+        if self.camera_mode == "wrist":
+            T_base_camera = T_w_e @ self.T_ee_camera
+        else:
+            T_base_camera = self.T_base_camera_static
         t0 = time.time()
-        pcd_w = obs_to_pcd_w(depth_mm, K, masks, self.T_base_camera,
+        pcd_w = obs_to_pcd_w(depth_mm, K, masks, T_base_camera,
                              depth_filter_mm=self.args.depth_filter_mm)
         info["t_pcd_ms"] = (time.time() - t0) * 1e3
         info["pcd_n_points"] = int(pcd_w.shape[0])
@@ -427,8 +453,15 @@ def main():
     ap.add_argument("--dexycb-pipeline-dir", type=Path,
                     default=Path("/home/nyuair/zhewen/robo/dexycb_pipeline"),
                     help="parent dir of `dexycb_pipeline/` python package")
-    ap.add_argument("--T-base-camera", type=Path, required=True,
-                    dest="T_base_camera")
+    ap.add_argument("--T-base-camera", type=Path, default=None,
+                    dest="T_base_camera",
+                    help="Static base<-camera extrinsic (front-cam mode). "
+                         "Mutually exclusive with --T-ee-camera.")
+    ap.add_argument("--T-ee-camera", type=Path, default=None,
+                    dest="T_ee_camera",
+                    help="Hand-eye ee<-camera extrinsic (wrist-cam mode). "
+                         "T_base_camera is recomputed per OBS as T_w_e @ T_ee_camera. "
+                         "Mutually exclusive with --T-base-camera.")
     ap.add_argument("--sam2-root", type=Path,
                     default=Path("/home/nyuair/zhewen/sam2"))
     ap.add_argument("--sam2-ckpt", default="sam2.1_hiera_large.pt")
@@ -446,6 +479,9 @@ def main():
                     help="If set, dump per-step rgb/depth/mask/pcd_w/action "
                          "for offline visualization.")
     args = ap.parse_args()
+
+    if (args.T_base_camera is None) == (args.T_ee_camera is None):
+        sys.exit("must pass exactly one of --T-base-camera / --T-ee-camera")
 
     Server(args).serve()
 
